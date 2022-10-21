@@ -210,6 +210,9 @@ const App = (screen: any, pcsbin: string) => {
         if (typeof reflt.current.selected === "number") {
           const selectedIdx = reflt.current.selected - 1
           const v = state.fileArr[selectedIdx]
+          if (!v) {
+            return
+          }
 
           const onNext = new Promise((resolve) => {
             ondataCb.current = (d) => {
@@ -292,7 +295,7 @@ const App = (screen: any, pcsbin: string) => {
           }}
         >
           {Number.isInteger(state.selectedIdx)
-            ? `selected: ${state.fileArr[state.selectedIdx].filePath}`
+            ? `selected: ${state.fileArr?.[state.selectedIdx]?.filePath}`
             : `selected: `}
         </text>
         <button
