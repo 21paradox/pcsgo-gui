@@ -1,4 +1,10 @@
-import React, { Fragment, useEffect, useReducer, useRef } from "react"
+import React, {
+  Fragment,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+} from "react"
 // @ts-ignore
 import blessed from "blessed"
 import { render } from "react-blessed"
@@ -20,6 +26,7 @@ function initState() {
     }[],
     fileAoa: [["filePath", "updateDate", "fileSize"]],
     selectedIdx: NaN,
+    curFolder: "",
   }
 }
 export type State = ReturnType<typeof initState>
@@ -31,7 +38,7 @@ export type Action =
   | Partial<State>
 export type Dispatch = React.Dispatch<Action>
 
-const dirBeginPfx = /当前目录: .+\r\n----/
+const dirBeginPfx = /当前目录: (.+)\r\n----/
 // const dirBeginPfx = /当前目录/
 const dirEndPfx = /当前目录: .+\r\n/
 const dirEndPad = /----\r\n$/
@@ -41,12 +48,21 @@ function reducer(state: State, action: Action) {
     if (action.type === "append-log") {
       const logtxt = state.logtxt + action.payload
       const matched = logtxt.match(dirBeginPfx)
-      // screen.debug(matched, "mm")
 
       const buildTable = (contentStr: string) => {
+        const fileAoa = [["filePath", "updateDate", "fileSize"]]
+        if (!matched) {
+          return {
+            fileArr: [],
+            fileAoa,
+            curFolder: "",
+          }
+        }
+
         const parsed = Parser.parse(contentStr)
         const fileArr: State["fileArr"] = []
-        const fileAoa = [["filePath", "updateDate", "fileSize"]]
+
+        const curFolder = matched?.[1] || ""
 
         parsed.forEach((item: any, i: number) => {
           if (Number(item["#"][0]) === i) {
@@ -63,6 +79,7 @@ function reducer(state: State, action: Action) {
         return {
           fileArr,
           fileAoa,
+          curFolder,
         }
       }
 
@@ -70,6 +87,7 @@ function reducer(state: State, action: Action) {
         let contentStr = logtxt
           .substring(matched.index || 0)
           .replace(dirBeginPfx, "")
+        // screen.debug(curFolder)
         contentStr = contentStr.replace(dirEndPad, "")
         contentStr = contentStr.replace(/^(\r?\n)+/, "")
         return {
@@ -96,7 +114,8 @@ function reducer(state: State, action: Action) {
 const freshData = lodash.debounce((data, reflt, screen) => {
   reflt.current.setData(data)
   screen.render()
-}, 400)
+  reflt.current.focus()
+}, 1000)
 
 const App = (screen: any, pcsbin: string) => {
   const [state, dispatch] = useReducer(reducer, {}, initState) as [
@@ -113,11 +132,8 @@ const App = (screen: any, pcsbin: string) => {
     const pcs = pty.spawn(pcsbin, [], {
       // shell: true,
     })
+    pcs.write("cd / \n")
     pcs.onData((d) => {
-      // dispatch({
-      //   type: "append-log",
-      //   payload: d,
-      // })
       ondataCb.current(d)
     })
     pcsRef.current = pcs
@@ -129,24 +145,57 @@ const App = (screen: any, pcsbin: string) => {
           payload: d,
         })
       }
+
       pcs.write("ls\n")
     }, 2000)
     // refManager.current.refresh()
-    reflt.current.focus()
+    // reflt.current.focus()
   }, [])
 
   useEffect(() => {
     freshData(state.fileAoa, reflt, screen)
   }, [state.fileAoa])
 
+  const onBack = useCallback(async () => {
+    if (state.curFolder === "/") {
+      return
+    }
+    const onNext = new Promise((resolve) => {
+      ondataCb.current = (d) => {
+        resolve(1)
+      }
+    })
+    pcsRef.current.write(`cd ../ \n`)
+
+    await onNext
+    dispatch({
+      logtxt: "",
+    })
+    ondataCb.current = (d) => {
+      dispatch({
+        type: "append-log",
+        payload: d,
+      })
+    }
+    pcsRef.current.write(`ls \n`)
+  }, [state])
+
   useEffect(() => {
     const onSelect = (item) => {
       const idx = reflt.current.getItemIndex(item)
+      const v = state.fileArr[idx - 1]
       // screen.debug(idx, "mm")
       // screen.debug(state.fileArr[idx - 1])
+      ondataCb.current = (d) => {
+        screen.debug(d)
+      }
+      if (Number.isInteger(state.selectedIdx)) {
+        pcsRef.current.write(`cd ${v.filePath} \n`)
+      }
     }
-    reflt.current.on("select", onSelect)
-    const onMove = (ch, key: any) => {
+    // reflt.current.on("select", onSelect)
+    const onMove = async (ch, key: any) => {
+      screen.debug(key.name)
       if (key.name === "space") {
         if (typeof reflt.current.selected === "number") {
           const selectedIdx = reflt.current.selected - 1
@@ -157,94 +206,46 @@ const App = (screen: any, pcsbin: string) => {
         // console.log(selected, "selected")
         // const idx = reflt.current.getItemIndex(selected)
         // console.log(idx, "idx")
+      } else if (key.name === "enter") {
+        if (typeof reflt.current.selected === "number") {
+          const selectedIdx = reflt.current.selected - 1
+          const v = state.fileArr[selectedIdx]
+
+          const onNext = new Promise((resolve) => {
+            ondataCb.current = (d) => {
+              screen.debug(d)
+              resolve(1)
+            }
+          })
+          screen.debug(`cd '${v.filePath}' \n`)
+          pcsRef.current.write(`cd '${v.filePath}' \n`)
+
+          await onNext
+          dispatch({
+            logtxt: "",
+          })
+          ondataCb.current = (d) => {
+            screen.debug(d)
+            dispatch({
+              type: "append-log",
+              payload: d,
+            })
+          }
+          pcsRef.current.write(`ls \n`)
+        }
+      } else if (key.name === "b") {
+        onBack()
       }
     }
     reflt.current.on("keypress", onMove)
     return () => {
-      reflt.current.off("select", onSelect)
+      // reflt.current.off("select", onSelect)
       reflt.current.off("keypress", onMove)
     }
   }, [state])
 
   return (
     <Fragment>
-      {/* <box
-        label="inner box"
-        left="0%"
-        width="60%"
-        height="40%"
-        border={{ type: "line" }}
-      ></box>
-      <box
-        label="inner box"
-        left="40%"
-        width="60%"
-        height="40%"
-        border={{ type: "line" }}
-      >
-        <listtable
-          parent={screen}
-          mouse={true}
-          width="100%"
-          height="100%"
-          pad={2}
-          keys={true}
-          vi={true}
-          style={{
-            selected: {
-              bg: "red",
-            },
-          }}
-          data={[
-            [""],
-            [` {blue-fg}${process.env.HOME}{/blue-fg} `],
-            ["hello"],
-            ["Elephant"],
-            ["Bird"],
-            ["Elephant"],
-            ["Bird"],
-            ["Elephant"],
-            ["Bird"],
-          ]}
-        ></listtable>
-      </box> */}
-
-      {/* 
-      <box
-        {...{
-          parent: screen,
-          top: "40%",
-          left: "0",
-          width: "50%",
-          height: "50%",
-          border: "line",
-          tags: true,
-          keys: true,
-          vi: true,
-          mouse: true,
-          scrollable: true,
-          alwaysScroll: true,
-        }}
-      >
-      </box> */}
-
-      {/* <log
-        {...{
-          top: "40%",
-          left: "0%",
-          width: "50%",
-          height: "50%",
-          border: "line",
-          tags: true,
-          keys: true,
-          vi: true,
-          mouse: true,
-          scrollable: true,
-          alwaysScroll: true,
-          content: state.contentStr,
-        }}
-      ></log> */}
-
       <box
         {
           ...{
@@ -272,6 +273,9 @@ const App = (screen: any, pcsbin: string) => {
             top: 0,
             left: 0,
             content: "Back",
+            async onPress() {
+              onBack()
+            },
           }}
         ></button>
         <text
@@ -318,6 +322,17 @@ const App = (screen: any, pcsbin: string) => {
             },
           }}
         ></button>
+
+        <text
+          {...{
+            shrink: true,
+            border: { type: "none" },
+            top: 3,
+            left: 0,
+          }}
+        >
+          {`folder: ${state.curFolder}`}
+        </text>
       </box>
 
       <listtable
@@ -325,9 +340,9 @@ const App = (screen: any, pcsbin: string) => {
         {...{
           parent: screen,
           mouse: true,
-          top: 3,
+          top: 5,
           left: 0,
-          width: "80%",
+          width: "90%",
           height: "70%",
           border: "line",
           tags: true,
